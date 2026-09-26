@@ -1,0 +1,25 @@
+"""
+Ledger entry types and money-related constants.
+"""
+
+ENTRY_DEPOSIT = "DEPOSIT"
+ENTRY_WITHDRAWAL = "WITHDRAWAL"
+ENTRY_TRANSFER_OUT = "TRANSFER_OUT"
+ENTRY_TRANSFER_IN = "TRANSFER_IN"
+
+LEDGER_ENTRY_TYPE_CHOICES = [
+    (ENTRY_DEPOSIT, "Deposit"),
+    (ENTRY_WITHDRAWAL, "Withdrawal"),
+    (ENTRY_TRANSFER_OUT, "Transfer out"),
+    (ENTRY_TRANSFER_IN, "Transfer in"),
+]
+
+OPERATION_DEPOSIT = "deposit"
+OPERATION_WITHDRAW = "withdraw"
+OPERATION_TRANSFER = "transfer"
+
+LEDGER_OPERATION_CHOICES = [
+    (OPERATION_DEPOSIT, "Deposit"),
+    (OPERATION_WITHDRAW, "Withdraw"),
+    (OPERATION_TRANSFER, "Transfer"),
+]
