@@ -159,10 +159,37 @@ def test_register_login_refresh_me(api_client, tenant):
     )
     assert refreshed.status_code == status.HTTP_200_OK
     assert "access" in refreshed.data
+    assert "refresh" in refreshed.data
+    # Refresh tokens rotate: old refresh must not work again.
+    assert refreshed.data["refresh"] != refresh
+    reuse = api_client.post(
+        "/api/auth/refresh/",
+        {"refresh": refresh},
+        format="json",
+        HTTP_X_TENANT_ID=str(tenant.id),
+    )
+    assert reuse.status_code == status.HTTP_401_UNAUTHORIZED
 
 
 @pytest.mark.django_db
-def test_me_rejects_mismatched_tenant_header(api_client, tenant, tenant_user):
+def test_logout_blacklists_refresh(api_client, tenant, tenant_user):
+    tokens = issue_tenant_user_tokens(tenant_user)
+    logout = api_client.post(
+        "/api/auth/logout/",
+        {"refresh": tokens["refresh"]},
+        format="json",
+        HTTP_X_TENANT_ID=str(tenant.id),
+    )
+    assert logout.status_code == status.HTTP_204_NO_CONTENT
+
+    reuse = api_client.post(
+        "/api/auth/refresh/",
+        {"refresh": tokens["refresh"]},
+        format="json",
+        HTTP_X_TENANT_ID=str(tenant.id),
+    )
+    assert reuse.status_code == status.HTTP_401_UNAUTHORIZED
+
     other = Tenant.objects.create(name="Other")
     tokens = issue_tenant_user_tokens(tenant_user)
 

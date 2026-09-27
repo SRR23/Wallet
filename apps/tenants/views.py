@@ -29,6 +29,7 @@ from apps.tenants.serializers import (
     TenantCreateSerializer,
     TenantSerializer,
     TenantUserLoginSerializer,
+    TenantUserLogoutSerializer,
     TenantUserProfileUpdateSerializer,
     TenantUserRefreshSerializer,
     TenantUserRegisterSerializer,
@@ -37,6 +38,7 @@ from apps.tenants.serializers import (
 from apps.tenants.tokens import (
     PRINCIPAL_TENANT_USER,
     TenantUserRefreshToken,
+    blacklist_tenant_user_refresh,
     issue_tenant_user_tokens,
     refresh_tenant_user_tokens,
 )
@@ -258,7 +260,8 @@ class TenantUserRefreshView(APIView):
         tags=["auth"],
         summary="Refresh tenant-user access token",
         description=(
-            "Exchanges a tenant-user refresh token for a new access (and refresh) pair.\n\n"
+            "Exchanges a tenant-user refresh token for a **new** access + refresh pair.\n\n"
+            "The presented refresh token is **rotated and blacklisted** — reuse returns 401.\n\n"
             "**Headers:** `X-Tenant-ID` required and must match the `tenant_id` "
             "stored inside the refresh token.\n\n"
             "Do not use a platform super-admin refresh token here."
@@ -289,6 +292,48 @@ class TenantUserRefreshView(APIView):
             )
 
         return Response(tokens, status=status.HTTP_200_OK)
+
+
+class TenantUserLogoutView(APIView):
+    """Blacklist a tenant-user refresh token (logout)."""
+
+    authentication_classes = [RequiredTenantHeaderAuthentication]
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        tags=["auth"],
+        summary="Logout tenant user (blacklist refresh)",
+        description=(
+            "Invalidates the given refresh token so it cannot be used again.\n\n"
+            "Access tokens remain valid until they expire (short-lived).\n\n"
+            "**Headers:** `X-Tenant-ID` required and must match the refresh token tenant."
+        ),
+        parameters=[TENANT_HEADER_REQUIRED],
+        request=TenantUserLogoutSerializer,
+        responses={204: None},
+    )
+    def post(self, request):
+        serializer = TenantUserLogoutSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        raw_refresh = serializer.validated_data["refresh"]
+
+        try:
+            refresh = TenantUserRefreshToken(raw_refresh)
+            if refresh.get("principal") != PRINCIPAL_TENANT_USER:
+                raise InvalidToken("Not a tenant-user refresh token.")
+            if str(refresh["tenant_id"]) != str(request.tenant.id):
+                raise InvalidToken(
+                    f"{TENANT_HEADER} does not match the refresh token tenant."
+                )
+            blacklist_tenant_user_refresh(raw_refresh)
+        except (InvalidToken, TokenError) as exc:
+            detail = getattr(exc, "detail", None) or str(exc)
+            return Response(
+                {"error": "authentication_failed", "detail": detail},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class TenantUserMeView(APIView):

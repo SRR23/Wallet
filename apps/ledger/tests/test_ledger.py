@@ -122,6 +122,52 @@ def test_idempotent_deposit(user_a):
 
 
 @pytest.mark.django_db
+def test_idempotency_rejects_amount_mismatch(user_a):
+    deposit(
+        tenant=user_a.tenant,
+        wallet=user_a.wallet,
+        amount=1000,
+        idempotency_key="amt-key",
+    )
+    from rest_framework.exceptions import ValidationError
+
+    with pytest.raises(ValidationError) as exc:
+        deposit(
+            tenant=user_a.tenant,
+            wallet=user_a.wallet,
+            amount=2000,
+            idempotency_key="amt-key",
+        )
+    assert "different amount" in str(exc.value.detail).lower()
+    user_a.wallet.refresh_from_db()
+    assert user_a.wallet.balance == 1000
+
+
+@pytest.mark.django_db
+def test_idempotency_rejects_wallet_mismatch(user_a, user_b):
+    deposit(
+        tenant=user_a.tenant,
+        wallet=user_a.wallet,
+        amount=500,
+        idempotency_key="wal-key",
+    )
+    from rest_framework.exceptions import ValidationError
+
+    with pytest.raises(ValidationError) as exc:
+        deposit(
+            tenant=user_a.tenant,
+            wallet=user_b.wallet,
+            amount=500,
+            idempotency_key="wal-key",
+        )
+    assert "destination wallet" in str(exc.value.detail).lower()
+    user_a.wallet.refresh_from_db()
+    user_b.wallet.refresh_from_db()
+    assert user_a.wallet.balance == 500
+    assert user_b.wallet.balance == 0
+
+
+@pytest.mark.django_db
 def test_transfer_same_tenant(user_a, user_b):
     deposit(
         tenant=user_a.tenant,

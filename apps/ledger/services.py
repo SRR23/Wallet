@@ -4,11 +4,13 @@ Ledger money-movement services.
 All balance changes go through these functions with:
 - transaction.atomic()
 - select_for_update() on wallets (ordered by id to avoid deadlocks)
-- per-tenant idempotency_key uniqueness
+- claim idempotency key *before* mutating balance (savepoint-safe race path)
+- per-tenant idempotency_key uniqueness, matching amount + wallets on replay
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from uuid import UUID
 
 from django.db import IntegrityError, transaction
 from django.db.models import F
@@ -34,6 +36,14 @@ class LedgerResult:
 
     transaction: LedgerTransaction
     replayed: bool
+
+
+def _wallet_ids_equal(left, right) -> bool:
+    if left is None and right is None:
+        return True
+    if left is None or right is None:
+        return False
+    return left == right
 
 
 def _get_existing_transaction(
@@ -85,20 +95,110 @@ def _validate_idempotency_key(idempotency_key: str) -> str:
     return key
 
 
+def _assert_idempotent_payload_matches(
+    existing: LedgerTransaction,
+    *,
+    expected_operation: str,
+    amount: int,
+    wallet_from_id: UUID | None,
+    wallet_to_id: UUID | None,
+) -> None:
+    """
+    Same key must mean the same logical request.
+
+    Mismatched operation, amount, or wallets is treated as a client error —
+    never silently replay a different transfer.
+    """
+    if existing.operation != expected_operation:
+        raise ValidationError(
+            {"idempotency_key": "Key already used for a different operation."}
+        )
+    if existing.amount != amount:
+        raise ValidationError(
+            {
+                "idempotency_key": (
+                    "Key already used with a different amount. "
+                    "Reuse the original amount or choose a new key."
+                )
+            }
+        )
+    if not _wallet_ids_equal(existing.wallet_from_id, wallet_from_id):
+        raise ValidationError(
+            {
+                "idempotency_key": (
+                    "Key already used with a different source wallet."
+                )
+            }
+        )
+    if not _wallet_ids_equal(existing.wallet_to_id, wallet_to_id):
+        raise ValidationError(
+            {
+                "idempotency_key": (
+                    "Key already used with a different destination wallet."
+                )
+            }
+        )
+
+
 def _replay_or_none(
     *,
     tenant: Tenant,
     key: str,
     expected_operation: str,
+    amount: int,
+    wallet_from_id: UUID | None,
+    wallet_to_id: UUID | None,
 ) -> LedgerResult | None:
     existing = _get_existing_transaction(tenant=tenant, idempotency_key=key)
     if existing is None:
         return None
-    if existing.operation != expected_operation:
-        raise ValidationError(
-            {"idempotency_key": "Key already used for a different operation."}
-        )
+    _assert_idempotent_payload_matches(
+        existing,
+        expected_operation=expected_operation,
+        amount=amount,
+        wallet_from_id=wallet_from_id,
+        wallet_to_id=wallet_to_id,
+    )
     return LedgerResult(transaction=existing, replayed=True)
+
+
+def _claim_transaction(
+    *,
+    tenant: Tenant,
+    operation: str,
+    key: str,
+    amount: int,
+    wallet_from: Wallet | None,
+    wallet_to: Wallet | None,
+) -> LedgerTransaction | LedgerResult:
+    """
+    Insert the ledger transaction row to claim the idempotency key.
+
+    Uses a savepoint so a concurrent unique violation does not abort the
+    outer atomic block. Balance is updated only after a successful claim.
+    """
+    try:
+        with transaction.atomic():
+            return LedgerTransaction.objects.create(
+                tenant=tenant,
+                operation=operation,
+                idempotency_key=key,
+                amount=amount,
+                wallet_from=wallet_from,
+                wallet_to=wallet_to,
+            )
+    except IntegrityError:
+        replay = _replay_or_none(
+            tenant=tenant,
+            key=key,
+            expected_operation=operation,
+            amount=amount,
+            wallet_from_id=wallet_from.id if wallet_from else None,
+            wallet_to_id=wallet_to.id if wallet_to else None,
+        )
+        if replay is not None:
+            return replay
+        raise
 
 
 @transaction.atomic
@@ -109,45 +209,47 @@ def deposit(
     amount: int,
     idempotency_key: str,
 ) -> LedgerResult:
-    """Credit a wallet. Idempotent per tenant + key."""
+    """Credit a wallet. Idempotent per tenant + key (same amount + wallet)."""
     _validate_amount(amount)
     key = _validate_idempotency_key(idempotency_key)
 
     if wallet.tenant_id != tenant.id:
         raise ValidationError("Wallet does not belong to this tenant.")
 
-    early = _replay_or_none(tenant=tenant, key=key, expected_operation=OPERATION_DEPOSIT)
+    replay_kwargs = {
+        "tenant": tenant,
+        "key": key,
+        "expected_operation": OPERATION_DEPOSIT,
+        "amount": amount,
+        "wallet_from_id": None,
+        "wallet_to_id": wallet.id,
+    }
+
+    early = _replay_or_none(**replay_kwargs)
     if early is not None:
         return early
 
     (locked_wallet,) = _lock_wallets(wallet)
 
-    # Re-check after lock so concurrent retries never double-credit.
-    after_lock = _replay_or_none(
-        tenant=tenant, key=key, expected_operation=OPERATION_DEPOSIT
-    )
+    after_lock = _replay_or_none(**{**replay_kwargs, "wallet_to_id": locked_wallet.id})
     if after_lock is not None:
         return after_lock
+
+    claimed = _claim_transaction(
+        tenant=tenant,
+        operation=OPERATION_DEPOSIT,
+        key=key,
+        amount=amount,
+        wallet_from=None,
+        wallet_to=locked_wallet,
+    )
+    if isinstance(claimed, LedgerResult):
+        return claimed
+    tx = claimed
 
     locked_wallet.balance = F("balance") + amount
     locked_wallet.save(update_fields=["balance", "updated_at"])
     locked_wallet.refresh_from_db(fields=["balance"])
-
-    try:
-        tx = LedgerTransaction.objects.create(
-            tenant=tenant,
-            operation=OPERATION_DEPOSIT,
-            idempotency_key=key,
-            amount=amount,
-            wallet_to=locked_wallet,
-        )
-    except IntegrityError:
-        replay = _replay_or_none(
-            tenant=tenant, key=key, expected_operation=OPERATION_DEPOSIT
-        )
-        if replay is not None:
-            return replay
-        raise
 
     LedgerEntry.objects.create(
         tenant=tenant,
@@ -176,14 +278,23 @@ def withdraw(
     if wallet.tenant_id != tenant.id:
         raise ValidationError("Wallet does not belong to this tenant.")
 
-    early = _replay_or_none(tenant=tenant, key=key, expected_operation=OPERATION_WITHDRAW)
+    replay_kwargs = {
+        "tenant": tenant,
+        "key": key,
+        "expected_operation": OPERATION_WITHDRAW,
+        "amount": amount,
+        "wallet_from_id": wallet.id,
+        "wallet_to_id": None,
+    }
+
+    early = _replay_or_none(**replay_kwargs)
     if early is not None:
         return early
 
     (locked_wallet,) = _lock_wallets(wallet)
 
     after_lock = _replay_or_none(
-        tenant=tenant, key=key, expected_operation=OPERATION_WITHDRAW
+        **{**replay_kwargs, "wallet_from_id": locked_wallet.id}
     )
     if after_lock is not None:
         return after_lock
@@ -191,25 +302,21 @@ def withdraw(
     if locked_wallet.balance < amount:
         raise ValidationError({"amount": "Insufficient funds."})
 
+    claimed = _claim_transaction(
+        tenant=tenant,
+        operation=OPERATION_WITHDRAW,
+        key=key,
+        amount=amount,
+        wallet_from=locked_wallet,
+        wallet_to=None,
+    )
+    if isinstance(claimed, LedgerResult):
+        return claimed
+    tx = claimed
+
     locked_wallet.balance = F("balance") - amount
     locked_wallet.save(update_fields=["balance", "updated_at"])
     locked_wallet.refresh_from_db(fields=["balance"])
-
-    try:
-        tx = LedgerTransaction.objects.create(
-            tenant=tenant,
-            operation=OPERATION_WITHDRAW,
-            idempotency_key=key,
-            amount=amount,
-            wallet_from=locked_wallet,
-        )
-    except IntegrityError:
-        replay = _replay_or_none(
-            tenant=tenant, key=key, expected_operation=OPERATION_WITHDRAW
-        )
-        if replay is not None:
-            return replay
-        raise
 
     LedgerEntry.objects.create(
         tenant=tenant,
@@ -235,7 +342,8 @@ def transfer(
     """
     Move funds between two wallets of the same tenant.
 
-    Both sides succeed or neither does. Idempotent per tenant + key.
+    Both sides succeed or neither does. Idempotent per tenant + key
+    (same amount + both wallets).
     """
     _validate_amount(amount)
     key = _validate_idempotency_key(idempotency_key)
@@ -252,14 +360,27 @@ def transfer(
     if from_wallet.currency != to_wallet.currency:
         raise ValidationError("Wallets must use the same currency.")
 
-    early = _replay_or_none(tenant=tenant, key=key, expected_operation=OPERATION_TRANSFER)
+    replay_kwargs = {
+        "tenant": tenant,
+        "key": key,
+        "expected_operation": OPERATION_TRANSFER,
+        "amount": amount,
+        "wallet_from_id": from_wallet.id,
+        "wallet_to_id": to_wallet.id,
+    }
+
+    early = _replay_or_none(**replay_kwargs)
     if early is not None:
         return early
 
     locked_from, locked_to = _lock_wallets(from_wallet, to_wallet)
 
     after_lock = _replay_or_none(
-        tenant=tenant, key=key, expected_operation=OPERATION_TRANSFER
+        **{
+            **replay_kwargs,
+            "wallet_from_id": locked_from.id,
+            "wallet_to_id": locked_to.id,
+        }
     )
     if after_lock is not None:
         return after_lock
@@ -267,29 +388,24 @@ def transfer(
     if locked_from.balance < amount:
         raise ValidationError({"amount": "Insufficient funds."})
 
+    claimed = _claim_transaction(
+        tenant=tenant,
+        operation=OPERATION_TRANSFER,
+        key=key,
+        amount=amount,
+        wallet_from=locked_from,
+        wallet_to=locked_to,
+    )
+    if isinstance(claimed, LedgerResult):
+        return claimed
+    tx = claimed
+
     locked_from.balance = F("balance") - amount
     locked_to.balance = F("balance") + amount
     locked_from.save(update_fields=["balance", "updated_at"])
     locked_to.save(update_fields=["balance", "updated_at"])
     locked_from.refresh_from_db(fields=["balance"])
     locked_to.refresh_from_db(fields=["balance"])
-
-    try:
-        tx = LedgerTransaction.objects.create(
-            tenant=tenant,
-            operation=OPERATION_TRANSFER,
-            idempotency_key=key,
-            amount=amount,
-            wallet_from=locked_from,
-            wallet_to=locked_to,
-        )
-    except IntegrityError:
-        replay = _replay_or_none(
-            tenant=tenant, key=key, expected_operation=OPERATION_TRANSFER
-        )
-        if replay is not None:
-            return replay
-        raise
 
     LedgerEntry.objects.create(
         tenant=tenant,

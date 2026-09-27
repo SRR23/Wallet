@@ -120,6 +120,12 @@ class TenantUserRefreshSerializer(serializers.Serializer):
         return refresh_tenant_user_tokens(self.validated_data["refresh"])
 
 
+class TenantUserLogoutSerializer(serializers.Serializer):
+    refresh = serializers.CharField(
+        help_text="Refresh token to invalidate. After logout it cannot be reused.",
+    )
+
+
 class TenantUserProfileUpdateSerializer(serializers.Serializer):
     name = serializers.CharField(
         max_length=255,

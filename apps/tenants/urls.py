@@ -10,6 +10,7 @@ from apps.tenants.views import (
     TenantDetailView,
     TenantListCreateView,
     TenantUserLoginView,
+    TenantUserLogoutView,
     TenantUserMeView,
     TenantUserRefreshView,
     TenantUserRegisterView,
@@ -23,6 +24,7 @@ urlpatterns = [
     path("auth/register/", TenantUserRegisterView.as_view(), name="register"),
     path("auth/login/", TenantUserLoginView.as_view(), name="login"),
     path("auth/refresh/", TenantUserRefreshView.as_view(), name="refresh"),
+    path("auth/logout/", TenantUserLogoutView.as_view(), name="logout"),
     path("auth/me/", TenantUserMeView.as_view(), name="me"),
     # Auth — platform super admin
     path("auth/admin/login/", AdminLoginView.as_view(), name="admin-login"),
