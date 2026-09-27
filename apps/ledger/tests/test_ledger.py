@@ -121,6 +121,49 @@ def test_idempotent_deposit(user_a):
     assert LedgerTransaction.objects.filter(idempotency_key="same-key").count() == 1
 
 
+@pytest.mark.django_db(transaction=True)
+def test_concurrent_same_idempotency_key_deposit(user_a):
+    """Two overlapping deposits with the same key must credit once only."""
+    results = []
+    errors = []
+
+    def do_deposit():
+        try:
+            results.append(
+                deposit(
+                    tenant=user_a.tenant,
+                    wallet=Wallet.objects.get(pk=user_a.wallet.id),
+                    amount=1000,
+                    idempotency_key="race-same-key",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — collect either outcome
+            errors.append(exc)
+
+    t1 = threading.Thread(target=do_deposit)
+    t2 = threading.Thread(target=do_deposit)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert errors == []
+    assert len(results) == 2
+    assert sum(1 for r in results if r.replayed) == 1
+    assert sum(1 for r in results if not r.replayed) == 1
+    assert results[0].transaction.id == results[1].transaction.id
+
+    user_a.wallet.refresh_from_db()
+    assert user_a.wallet.balance == 1000
+    assert (
+        LedgerTransaction.objects.filter(
+            tenant=user_a.tenant,
+            idempotency_key="race-same-key",
+        ).count()
+        == 1
+    )
+
+
 @pytest.mark.django_db
 def test_idempotency_rejects_amount_mismatch(user_a):
     deposit(
