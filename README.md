@@ -51,6 +51,20 @@ Important variables:
 | `REDIS_URL` / `CELERY_*` | Wired for cache/Celery; **not required** for core wallet/ledger features |
 | `SWAGGER_SUPERUSER_*` | DEBUG-only Swagger auto-login (local `.env`) |
 
+### Local vs Docker databases (important)
+
+**Local setup and Docker Compose use different Postgres databases by default.** That is intentional and standard.
+
+| Setup | Database |
+| --- | --- |
+| Without Docker | Host Postgres from `.env` (`localhost:5432`) |
+| With Docker | Compose `db` service (host port **5434**, volume `walletapi_pgdata`) |
+
+A superuser (or tenants/users) created in one setup **will not appear** in the other. Create a superuser in whichever environment you are using:
+
+- Local: `python manage.py createsuperuser`
+- Docker: `docker compose --env-file .env.docker exec web python manage.py createsuperuser`
+
 ---
 
 ## Setup without Docker
@@ -126,9 +140,10 @@ Default host ports (so this stack can sit beside another project on 8000/5432):
 - Health: http://localhost:8001/api/health/  
 - Swagger: http://localhost:8001/api/docs/  
 
-The web entrypoint waits for Postgres and runs `migrate` when `RUN_MIGRATIONS=1`.
+**`RUN_MIGRATIONS` (Compose only — not in `.env`)**  
+Set on the **web** service in `docker-compose.yml` as `RUN_MIGRATIONS=1`. On container start, `docker/entrypoint.sh` waits for Postgres, then runs `python manage.py migrate` so tables exist without a manual migrate step. Worker and beat use `RUN_MIGRATIONS=0` so only **one** service applies migrations (avoids race conditions). You do not need to put this in `.env.docker`.
 
-Create a platform superuser inside the web container:
+Create a platform superuser **inside Docker** (this DB is separate from local Postgres — see [Local vs Docker databases](#local-vs-docker-databases-important)):
 
 ```bash
 docker compose --env-file .env.docker exec web python manage.py createsuperuser
