@@ -311,6 +311,10 @@ def test_api_deposit_withdraw_transfer_and_history(user_a, user_b):
     assert history.status_code == status.HTTP_200_OK
     assert history.data["count"] >= 3
     assert "results" in history.data
+    assert "next" in history.data
+    assert "previous" in history.data
+    assert "page" not in history.data
+    assert "page_size" not in history.data
 
     # Cross-tenant destination rejected at API validation
     other = create_user(

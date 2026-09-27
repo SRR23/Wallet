@@ -5,6 +5,7 @@ Requires tenant-user JWT + matching X-Tenant-ID.
 """
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import OpenApiParameter, extend_schema
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -30,8 +31,16 @@ PAGE_PARAMETER = OpenApiParameter(
     type=int,
     location=OpenApiParameter.QUERY,
     required=False,
-    description="Page number for transaction history (default 1, page size 20).",
+    description="Page number (default 1). Response includes count, next, previous, results.",
 )
+
+
+class WalletTransactionPagination(PageNumberPagination):
+    """Standard DRF page links: count / next / previous / results."""
+
+    page_size = 20
+    page_size_query_param = None
+    max_page_size = 20
 
 
 class MyWalletView(APIView):
@@ -92,6 +101,7 @@ class WalletTransactionListView(APIView):
 
     authentication_classes = [TenantUserJWTAuthentication]
     permission_classes = [IsAuthenticated]
+    pagination_class = WalletTransactionPagination
 
     @extend_schema(
         tags=["wallets"],
@@ -102,7 +112,8 @@ class WalletTransactionListView(APIView):
             "- `GET /api/wallets/{wallet_id}/transactions/` — same, but wallet id must be yours\n\n"
             "Each entry has `entry_type` (`DEPOSIT`, `WITHDRAWAL`, `TRANSFER_IN`, "
             "`TRANSFER_OUT`), `amount` (minor units), and `balance_after`.\n\n"
-            "Paginated: use query `?page=1` (20 items per page).\n\n"
+            "Paginated (DRF standard): `count`, `next`, `previous`, `results`. "
+            "Use query `?page=2` to follow `next`.\n\n"
             "**Auth:** tenant-user Bearer JWT + matching `X-Tenant-ID`."
         ),
         parameters=[TENANT_HEADER_REQUIRED, PAGE_PARAMETER],
@@ -124,21 +135,7 @@ class WalletTransactionListView(APIView):
             tenant=request.tenant,
         ).select_related("transaction")
 
-        try:
-            page = max(int(request.query_params.get("page", "1")), 1)
-        except ValueError:
-            page = 1
-        page_size = 20
-        start = (page - 1) * page_size
-        end = start + page_size
-        total = entries.count()
-        items = entries[start:end]
-
-        return Response(
-            {
-                "count": total,
-                "page": page,
-                "page_size": page_size,
-                "results": LedgerEntrySerializer(items, many=True).data,
-            }
-        )
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(entries, request, view=self)
+        serializer = LedgerEntrySerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
