@@ -29,11 +29,17 @@ TENANT_HEADER_REQUIRED = OpenApiParameter(
 )
 
 
-def _transaction_response(result) -> Response:
+def _transaction_response(result, *, viewer_wallet_id=None) -> Response:
     status_code = (
         status.HTTP_200_OK if result.replayed else status.HTTP_201_CREATED
     )
-    payload = LedgerTransactionSerializer(result.transaction).data
+    context = {}
+    if viewer_wallet_id is not None:
+        context["viewer_wallet_id"] = viewer_wallet_id
+    payload = LedgerTransactionSerializer(
+        result.transaction,
+        context=context,
+    ).data
     payload["replayed"] = result.replayed
     return Response(payload, status=status_code)
 
@@ -126,6 +132,8 @@ class TransferView(APIView):
             "- `idempotency_key` — unique per tenant; retries are safe\n\n"
             "Writes two ledger entries in one atomic transaction "
             "(`TRANSFER_OUT` + `TRANSFER_IN`) with `select_for_update` locking.\n\n"
+            "Both entries are returned, but `balance_after` is omitted on the "
+            "**other** wallet’s entry (privacy).\n\n"
             "Cross-tenant destinations are rejected. Insufficient funds → **400**.\n\n"
             "**Auth:** tenant-user Bearer JWT + matching `X-Tenant-ID`."
         ),
@@ -139,11 +147,12 @@ class TransferView(APIView):
             context={"tenant": request.tenant},
         )
         serializer.is_valid(raise_exception=True)
+        my_wallet = request.tenant_user.wallet
         result = transfer(
             tenant=request.tenant,
-            from_wallet=request.tenant_user.wallet,
+            from_wallet=my_wallet,
             to_wallet=serializer.context["to_wallet"],
             amount=serializer.validated_data["amount"],
             idempotency_key=serializer.validated_data["idempotency_key"],
         )
-        return _transaction_response(result)
+        return _transaction_response(result, viewer_wallet_id=my_wallet.id)

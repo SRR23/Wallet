@@ -32,6 +32,16 @@ class LedgerEntrySerializer(serializers.ModelSerializer):
         )
         read_only_fields = fields
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # Transfer API may pass viewer_wallet_id to hide the other party's balance.
+        viewer_wallet_id = self.context.get("viewer_wallet_id")
+        if viewer_wallet_id is not None and str(instance.wallet_id) != str(
+            viewer_wallet_id
+        ):
+            data.pop("balance_after", None)
+        return data
+
 
 class LedgerTransactionSerializer(serializers.ModelSerializer):
     entries = LedgerEntrySerializer(many=True, read_only=True)

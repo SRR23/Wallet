@@ -285,6 +285,13 @@ def test_api_deposit_withdraw_transfer_and_history(user_a, user_b):
         format="json",
     )
     assert tr.status_code == status.HTTP_201_CREATED
+    # Both entries returned; counterparty balance_after is stripped.
+    entries_by_wallet = {str(e["wallet"]): e for e in tr.data["entries"]}
+    mine = entries_by_wallet[str(user_a.wallet.id)]
+    theirs = entries_by_wallet[str(user_b.wallet.id)]
+    assert "balance_after" in mine
+    assert mine["balance_after"] == 1200  # 2000 - 500 withdraw - 300 transfer
+    assert "balance_after" not in theirs
 
     # Idempotent replay
     tr2 = client.post(
