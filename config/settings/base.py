@@ -246,6 +246,8 @@ SPECTACULAR_SETTINGS = {
         "### Auth headers\n"
         "- Tenant APIs: `Authorization: Bearer <tenant access>` **and** `X-Tenant-ID: <tenant uuid>`\n"
         "- Admin APIs: `Authorization: Bearer <superadmin access>`\n\n"
+        "**Swagger tip:** The green **Authorize** button only sets the Bearer token. "
+        "You must still enter `X-Tenant-ID` on each tenant-user operation’s Parameters.\n\n"
         "In DEBUG, Swagger may auto-fill a superadmin token; tenant-user calls still need "
         "a tenant JWT and `X-Tenant-ID`."
     ),
@@ -260,8 +262,9 @@ SPECTACULAR_SETTINGS = {
                 "scheme": "bearer",
                 "bearerFormat": "JWT",
                 "description": (
-                    "JWT access token. Tenant-user token from register/login, "
-                    "or platform superadmin token from /api/auth/admin/login/."
+                    "Paste the **access** token only (Swagger adds `Bearer ` for you).\n\n"
+                    "**Important:** Authorize sets only `Authorization`. "
+                    "It does **not** send `X-Tenant-ID`."
                 ),
             }
         }

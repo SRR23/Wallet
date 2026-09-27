@@ -45,6 +45,17 @@ const uiInitialized = () => {
 };
 
 const isSchemaUrl = (url) => {
+  if (!url) {
+    return false;
+  }
+  try {
+    const path = new URL(url, document.baseURI).pathname;
+    if (path === "/api/schema/" || path.endsWith("/api/schema/")) {
+      return true;
+    }
+  } catch {
+    /* ignore */
+  }
   if (!uiInitialized()) {
     return false;
   }
@@ -105,11 +116,15 @@ const injectAuthCredentials = (request) => {
 };
 
 const requestInterceptor = (request, ...args) => {
-  // Inject Bearer on schema fetch AND on Try-it-out API calls.
-  try {
-    injectAuthCredentials(request);
-  } catch (e) {
-    console.error("auth injection failed with error: ", e);
+  // Do not attach Authorize token when downloading the OpenAPI schema.
+  // Tenant-user JWTs are not Django users; sending them to /api/schema/
+  // used to return 401 and break Swagger ("Failed to load API definition").
+  if (!isSchemaUrl(request.url)) {
+    try {
+      injectAuthCredentials(request);
+    } catch (e) {
+      console.error("auth injection failed with error: ", e);
+    }
   }
   if (!["GET", undefined].includes(request.method) && request.credentials === "same-origin") {
     request.headers["{{ csrf_header_name }}"] = "{{ csrf_token }}";
