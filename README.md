@@ -201,9 +201,9 @@ Need tenant-user Bearer + matching `X-Tenant-ID`.
 | Method | Path | What it does |
 | --- | --- | --- |
 | `GET` | `/api/wallets/me/` | My wallet balance. |
-| `GET` | `/api/wallets/me/transactions/` | My ledger history (paginated: `?page=`). |
+| `GET` | `/api/wallets/me/transactions/` | My ledger history (`count` / `next` / `previous` / `results`; `?page=`). |
 | `GET` | `/api/wallets/<wallet_id>/` | Same wallet by id (own wallet only; else 404). |
-| `GET` | `/api/wallets/<wallet_id>/transactions/` | History for that wallet (own only). |
+| `GET` | `/api/wallets/<wallet_id>/transactions/` | History for that wallet (own only; same pagination). |
 
 ### Ledger (money)
 
